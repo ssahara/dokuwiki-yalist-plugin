@@ -21,24 +21,19 @@
  * @author     Ben Slusky <sluskyb@paranoiacs.org>
  *
  */
-if (!defined('DOKU_INC')) define('DOKU_INC',realpath(dirname(__FILE__).'/../../').'/');
-if (!defined('DOKU_PLUGIN')) define('DOKU_PLUGIN',DOKU_INC.'lib/plugins/');
-require_once(DOKU_PLUGIN.'syntax.php');
+if (!defined('DOKU_INC')) die();
+
 class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
-    var $stack = array();
-    function getType() {
-        return 'container';
-    }
-    function getSort() {
-        // just before listblock (10)
-        return 9;
-    }
-    function getPType() {
-        return 'block';
-    }
+
+    protected $stack = array();
+
+    function getType() { return 'container'; }
+    function getSort() { return 9; } // just before listblock (10)
+    function getPType() { return 'block'; }
     function getAllowedTypes() {
         return array('substition', 'protected', 'disabled', 'formatting');
     }
+
     function connectTo($mode) {
        $this->Lexer->addEntryPattern('\n {2,}(?:--?|\*\*?|\?|::?)', $mode, 'plugin_yalist');
        $this->Lexer->addEntryPattern('\n\t{1,}(?:--?|\*\*?|\?|::?)', $mode, 'plugin_yalist');
@@ -48,7 +43,8 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
     function postConnect() {
         $this->Lexer->addExitPattern('\n', 'plugin_yalist');
     }
-    function handle($match, $state, $pos, &$handler) {
+
+    function handle($match, $state, $pos, Doku_Handler $handler) {
         $output = array();
         $level = 0;
         switch ($state) {
@@ -59,8 +55,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
                        "${frame['list']}_open",
                        "${frame['item']}_open",
                        "${frame['item']}_content_open");
-            if ($frame['paras'])
-                array_push($output, 'p_open');
+            if ($frame['paras']) array_push($output, 'p_open');
             array_push($this->stack, $frame);
             break;
         case DOKU_LEXER_EXIT:
@@ -70,8 +65,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
                 // close the content tag; for the rest it will have been
                 // closed already
                 if ($close_content) {
-                    if ($frame['paras'])
-                        array_push($output, 'p_close');
+                    if ($frame['paras']) array_push($output, 'p_close');
                     array_push($output, "${frame['item']}_content_close");
                     $close_content = false;
                 }
@@ -89,8 +83,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
                 $close_content = true;
                 while ($para_depth < $last_frame['depth'] && count($this->stack) > 1) {
                     if ($close_content) {
-                        if ($last_frame['paras'])
-                            array_push($output, 'p_close');
+                        if ($last_frame['paras']) array_push($output, 'p_close');
                         array_push($output, "${last_frame['item']}_content_close");
                         $close_content = false;
                     }
@@ -119,8 +112,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
             if ($curr_frame['depth'] > $last_frame['depth']) {
                 // going one level deeper
                 $level = $last_frame['level'] + 1;
-                if ($last_frame['paras'])
-                    array_push($output, 'p_close');
+                if ($last_frame['paras']) array_push($output, 'p_close');
                 array_push($output,
                            "${last_frame['item']}_content_close",
                            "${curr_frame['list']}_open");
@@ -136,8 +128,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
                     // again, we need to close the content tag only for
                     // the first frame popped off the stack
                     if ($close_content) {
-                        if ($last_frame['paras'])
-                            array_push($output, 'p_close');
+                        if ($last_frame['paras']) array_push($output, 'p_close');
                         array_push($output, "${last_frame['item']}_content_close");
                         $close_content = false;
                     }
@@ -152,8 +143,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
                 array_pop($this->stack);
                 $level = $last_frame['level'];
                 if ($close_content) {
-                    if ($last_frame['paras'])
-                        array_push($output, 'p_close');
+                    if ($last_frame['paras']) array_push($output, 'p_close');
                     array_push($output, "${last_frame['item']}_content_close");
                     $close_content = false;
                 }
@@ -169,8 +159,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
             array_push($output,
                        "${curr_frame['item']}_open",
                        "${curr_frame['item']}_content_open");
-            if ($curr_frame['paras'])
-                array_push($output, 'p_open');
+            if ($curr_frame['paras']) array_push($output, 'p_open');
             $curr_frame['level'] = $level;
             array_push($this->stack, $curr_frame);
             break;
@@ -195,8 +184,9 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
             'paras' => (substr($match, -1) == substr($match, -2, 1)),
         );
     }
-    function render($mode, &$renderer, $data) {
-        if ($mode != 'xhtml' && $mode != 'latex')
+
+    function render($format, Doku_Renderer $renderer, $data) {
+        if ($format != 'xhtml' && $format != 'latex')
             return false;
         if ($data['state'] == DOKU_LEXER_UNMATCHED) {
             $renderer->doc .= $renderer->_xmlEntities($data['output']);
@@ -204,7 +194,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
         }
         foreach ($data['output'] as $i) {
             $markup = '';
-            if ($mode == 'xhtml') {
+            if ($format == 'xhtml') {
                 switch ($i) {
                 case 'ol_open':
                     $markup = "<ol>\n";
@@ -268,7 +258,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
                     break;
                 }
             } else {
-                // $mode == 'latex'
+                // $format == 'latex'
                 switch ($i) {
                 case 'ol_open':
                     $markup = "\\begin{enumerate}\n";
