@@ -167,7 +167,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
             $output = $match;
             break;
         }
-        return array('state' => $state, 'output' => $output, 'level' => $level);
+        return array($state, $output, $level);
     }
     function _interpret_match($match) {
         $tag_table = array(
@@ -185,140 +185,99 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
         );
     }
 
+    /*
+     * Create output
+     */
     function render($format, Doku_Renderer $renderer, $data) {
-        if ($format != 'xhtml' && $format != 'latex')
-            return false;
-        if ($data['state'] == DOKU_LEXER_UNMATCHED) {
-            $renderer->doc .= $renderer->_xmlEntities($data['output']);
-            return true;
+
+        switch ($format) {
+            case 'xhtml':
+                return $this->render_xhtml($renderer, $data);
+            case 'latex':
+                return $this->render_latex($renderer, $data);
+            default:
+                return false;
         }
-        foreach ($data['output'] as $i) {
-            $markup = '';
-            if ($format == 'xhtml') {
-                switch ($i) {
-                case 'ol_open':
-                    $markup = "<ol>\n";
-                    break;
-                case 'ol_close':
-                    $markup = "</ol>\n";
-                    break;
-                case 'ul_open':
-                    $markup = "<ul>\n";
-                    break;
-                case 'ul_close':
-                    $markup = "</ul>\n";
-                    break;
-                case 'dl_open':
-                    $markup = "<dl>\n";
-                    break;
-                case 'dl_close':
-                    $markup = "</dl>\n";
-                    break;
-                case 'li_open':
-                    $markup = "<li class=\"level${data['level']}\">";
-                    break;
-                case 'li_content_open':
-                    $markup = "<div class=\"li\">\n";
-                    break;
-                case 'li_content_close':
-                    $markup = "\n</div>";
-                    break;
-                case 'li_close':
-                    $markup = "</li>\n";
-                    break;
-                case 'dt_open':
-                    $markup = "<dt class=\"level${data['level']}\">";
-                    break;
-                case 'dt_content_open':
-                    $markup = "<span class=\"dt\">";
-                    break;
-                case 'dt_content_close':
-                    $markup = "</span>";
-                    break;
-                case 'dt_close':
-                    $markup = "</dt>\n";
-                    break;
-                case 'dd_open':
-                    $markup = "<dd class=\"level${data['level']}\">";
-                    break;
-                case 'dd_content_open':
-                    $markup = "<div class=\"dd\">\n";
-                    break;
-                case 'dd_content_close':
-                    $markup = "\n</div>";
-                    break;
-                case 'dd_close':
-                    $markup = "</dd>\n";
-                    break;
-                case 'p_open':
-                    $markup = "<p>\n";
-                    break;
-                case 'p_close':
-                    $markup = "\n</p>";
-                    break;
-                }
-            } else {
-                // $format == 'latex'
-                switch ($i) {
-                case 'ol_open':
-                    $markup = "\\begin{enumerate}\n";
-                    break;
-                case 'ol_close':
-                    $markup = "\\end{enumerate}\n";
-                    break;
-                case 'ul_open':
-                    $markup = "\\begin{itemize}\n";
-                    break;
-                case 'ul_close':
-                    $markup = "\\end{itemize}\n";
-                    break;
-                case 'dl_open':
-                    $markup = "\\begin{description}\n";
-                    break;
-                case 'dl_close':
-                    $markup = "\\end{description}\n";
-                    break;
-                case 'li_open':
-                    $markup = "\item ";
-                    break;
-                case 'li_content_open':
-                    break;
-                case 'li_content_close':
-                    break;
-                case 'li_close':
-                    $markup = "\n";
-                    break;
-                case 'dt_open':
-                    $markup = "\item[";
-                    break;
-                case 'dt_content_open':
-                    break;
-                case 'dt_content_close':
-                    break;
-                case 'dt_close':
-                    $markup = "] ";
-                    break;
-                case 'dd_open':
-                    break;
-                case 'dd_content_open':
-                    break;
-                case 'dd_content_close':
-                    break;
-                case 'dd_close':
-                    $markup = "\n";
-                    break;
-                case 'p_open':
-                    $markup = "\n";
-                    break;
-                case 'p_close':
-                    $markup = "\n";
-                    break;
-                }
-            }
-            $renderer->doc .= $markup;
-        }
-        if ($data['state'] == DOKU_LEXER_EXIT)
-            $renderer->doc .= "\n";
-        return true;
     }
+
+    protected function render_xhtml(Doku_Renderer $renderer, $data) {
+        list($state, $output, $level) = $data;
+
+        switch ($state) {
+            case DOKU_LEXER_UNMATCHED:
+                $renderer->doc .= $renderer->_xmlEntities($output);
+                return true;
+            case DOKU_LEXER_EXIT:
+            default:
+                $markup = '';
+                foreach ($output as $i) {
+                  switch ($i) {
+                    case 'ol_open':  $markup = "<ol>\n"; break;
+                    case 'ol_close': $markup = "</ol>\n"; break;
+                    case 'ul_open':  $markup = "<ul>\n"; break;
+                    case 'ul_close': $markup = "</ul>\n"; break;
+                    case 'dl_open':  $markup = "<dl>\n"; break;
+                    case 'dl_close': $markup = "</dl>\n"; break;
+                    case 'li_open':  $markup = "<li class=\"level${level}\">"; break;
+                    case 'li_content_open':  $markup = "<div class=\"li\">\n"; break;
+                    case 'li_content_close': $markup = "\n</div>"; break;
+                    case 'li_close':         $markup = "</li>\n";  break;
+                    case 'dt_open':  $markup = "<dt class=\"level${level}\">"; break;
+                    case 'dt_content_open':  $markup = "<span class=\"dt\">"; break;
+                    case 'dt_content_close': $markup = "</span>"; break;
+                    case 'dt_close':         $markup = "</dt>\n"; break;
+                    case 'dd_open':  $markup = "<dd class=\"level${level}\">"; break;
+                    case 'dd_content_open':  $markup = "<div class=\"dd\">\n"; break;
+                    case 'dd_content_close': $markup = "\n</div>"; break;
+                    case 'dd_close': $markup = "</dd>\n"; break;
+                    case 'p_open':   $markup = "<p>\n";   break;
+                    case 'p_close':  $markup = "\n</p>";  break;
+                  }
+                  $renderer->doc .= $markup;
+                }
+                if ($state == DOKU_LEXER_EXIT) $renderer->doc .= "\n";
+                return true;
+        }
+    }
+
+    protected function render_latex(Doku_Renderer $renderer, $data) {
+        list($state, $output, $level) = $data;
+
+        switch ($state) {
+            case DOKU_LEXER_UNMATCHED:
+                $renderer->doc .= $renderer->_xmlEntities($output);
+                return true;
+            case DOKU_LEXER_EXIT:
+            default:
+                $markup = '';
+                foreach ($output as $i) {
+                  switch ($i) {
+                    case 'ol_open':  $markup = "\\begin{enumerate}\n"; break;
+                    case 'ol_close': $markup = "\\end{enumerate}\n"; break;
+                    case 'ul_open':  $markup = "\\begin{itemize}\n"; break;
+                    case 'ul_close': $markup = "\\end{itemize}\n"; break;
+                    case 'dl_open':  $markup = "\\begin{description}\n"; break;
+                    case 'dl_close': $markup = "\\end{description}\n"; break;
+                    case 'li_open':  $markup = "\item "; break;
+                    case 'li_content_open':  break;
+                    case 'li_content_close': break;
+                    case 'li_close': $markup = "\n"; break;
+                    case 'dt_open':  $markup = "\item["; break;
+                    case 'dt_content_open':  break;
+                    case 'dt_content_close': break;
+                    case 'dt_close': $markup = "] "; break;
+                    case 'dd_open':          break;
+                    case 'dd_content_open':  break;
+                    case 'dd_content_close': break;
+                    case 'dd_close': $markup = "\n"; break;
+                    case 'p_open':   $markup = "\n"; break;
+                    case 'p_close':  $markup = "\n"; break;
+                  }
+                  $renderer->doc .= $markup;
+                }
+                if ($state == DOKU_LEXER_EXIT) $renderer->doc .= "\n";
+                return true;
+        }
+    }
+
 }
