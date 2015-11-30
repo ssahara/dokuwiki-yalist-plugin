@@ -25,6 +25,15 @@ if (!defined('DOKU_INC')) die();
 
 class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
 
+    protected $entry_pattern = '(?:--?|\*\*?|\?|::?)';
+    protected $match_pattern = '(?:--?|\*\*?|\?|::?|\.\.)';
+    protected $exit_pattern  = '\n';
+
+    protected $pluginMode;
+
+    public function __construct() {
+        $this->pluginMode = substr(get_class($this), 7); // drop 'syntax_' from class name
+    }
     protected $stack = array();
 
     function getType() { return 'container'; }
@@ -35,14 +44,33 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
     }
 
     function connectTo($mode) {
-       $this->Lexer->addEntryPattern('\n {2,}(?:--?|\*\*?|\?|::?)', $mode, 'plugin_yalist');
-       $this->Lexer->addEntryPattern('\n\t{1,}(?:--?|\*\*?|\?|::?)', $mode, 'plugin_yalist');
-       $this->Lexer->addPattern('\n {2,}(?:--?|\*\*?|\?|::?|\.\.)', 'plugin_yalist');
-       $this->Lexer->addPattern('\n\t{1,}(?:--?|\*\*?|\?|::?|\.\.)', 'plugin_yalist');
+        $this->Lexer->addEntryPattern('\n {2,}'.$this->entry_pattern, $mode, $this->pluginMode);
+        $this->Lexer->addEntryPattern('\n\t{1,}'.$this->entry_pattern, $mode, $this->pluginMode);
+        $this->Lexer->addPattern('\n {2,}'.$this->match_pattern, $this->pluginMode);
+        $this->Lexer->addPattern('\n\t{1,}'.$this->match_pattern, $this->pluginMode);
     }
     function postConnect() {
-        $this->Lexer->addExitPattern('\n', 'plugin_yalist');
+        $this->Lexer->addExitPattern($this->exit_pattern, $this->pluginMode);
     }
+
+
+    private function _interpret_match($match) {
+        $tag_table = array(
+                '*' => 'u_li',
+                '-' => 'o_li',
+                '?' => 'dt',
+                ':' => 'dd',
+                '.' => 'p',
+        );
+        $tag = $tag_table[substr($match, -1)];  // '\n  --'
+        return array(
+            'depth' => count(explode('  ', str_replace("\t", '  ', $match))),
+            'list' => ($tag == 'p') ? ''  : substr($tag, 0, 1).'l',   // ul, ol, dl or blank
+            'item' => ($tag == 'p') ? 'p' : substr($tag, -2),         // li, dt, dd or p
+            'paras' => (substr($match, -1) == substr($match, -2, 1)), // bool
+        );
+    }
+
 
     function handle($match, $state, $pos, Doku_Handler $handler) {
         $output = array();
@@ -75,11 +103,13 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
             }
             break;
         case DOKU_LEXER_MATCHED:
+            $curr_frame = $this->_interpret_match($match);
             $last_frame = end($this->stack);
-            if (substr($match, -2) == '..') {
+
+            if ($curr_frame['item'] == 'p') { // paragraph
                 // new paragraphs cannot be deeper than the current depth,
                 // but they may be shallower
-                $para_depth = count(explode('  ', str_replace("\t", '  ', $match)));
+                $para_depth = $curr_frame['depth'];
                 $close_content = true;
                 while ($para_depth < $last_frame['depth'] && count($this->stack) > 1) {
                     if ($close_content) {
@@ -106,83 +136,68 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
                     $state = DOKU_LEXER_UNMATCHED;
                     $output = $match;
                 }
-                break;
-            }
-            $curr_frame = $this->_interpret_match($match);
-            if ($curr_frame['depth'] > $last_frame['depth']) {
-                // going one level deeper
-                $level = $last_frame['level'] + 1;
-                if ($last_frame['paras']) array_push($output, 'p_close');
-                array_push($output,
+            } else { // list item
+                $curr_frame = $this->_interpret_match($match);
+                if ($curr_frame['depth'] > $last_frame['depth']) {
+                    // going one level deeper
+                    $level = $last_frame['level'] + 1;
+                    if ($last_frame['paras']) array_push($output, 'p_close');
+                    array_push($output,
                            "${last_frame['item']}_content_close",
                            "${curr_frame['list']}_open");
-            } else {
-                // same depth, or getting shallower
-                $close_content = true;
-                // keep popping frames off the stack until we find a frame
-                // that's at least as deep as this one, or until only the
-                // bottom frame (i.e. the initial list markup) remains
-                while ($curr_frame['depth'] < $last_frame['depth'] &&
-                       count($this->stack) > 1)
-                {
-                    // again, we need to close the content tag only for
-                    // the first frame popped off the stack
+                } else {
+                    // same depth, or getting shallower
+                    $close_content = true;
+                    // keep popping frames off the stack until we find a frame
+                    // that's at least as deep as this one, or until only the
+                    // bottom frame (i.e. the initial list markup) remains
+                    while ($curr_frame['depth'] < $last_frame['depth'] &&
+                        count($this->stack) > 1)
+                    {
+                        // again, we need to close the content tag only for
+                        // the first frame popped off the stack
+                        if ($close_content) {
+                            if ($last_frame['paras']) array_push($output, 'p_close');
+                            array_push($output, "${last_frame['item']}_content_close");
+                            $close_content = false;
+                        }
+                        array_push($output,
+                               "${last_frame['item']}_close",
+                               "${last_frame['list']}_close");
+                        array_pop($this->stack);
+                        $last_frame = end($this->stack);
+                    }
+                    // pull the last frame off the stack;
+                    // it will be replaced by the current frame
+                    array_pop($this->stack);
+                    $level = $last_frame['level'];
                     if ($close_content) {
                         if ($last_frame['paras']) array_push($output, 'p_close');
                         array_push($output, "${last_frame['item']}_content_close");
                         $close_content = false;
                     }
-                    array_push($output,
-                               "${last_frame['item']}_close",
-                               "${last_frame['list']}_close");
-                    array_pop($this->stack);
-                    $last_frame = end($this->stack);
-                }
-                // pull the last frame off the stack;
-                // it will be replaced by the current frame
-                array_pop($this->stack);
-                $level = $last_frame['level'];
-                if ($close_content) {
-                    if ($last_frame['paras']) array_push($output, 'p_close');
-                    array_push($output, "${last_frame['item']}_content_close");
-                    $close_content = false;
-                }
-                array_push($output, "${last_frame['item']}_close");
-                if ($curr_frame['list'] != $last_frame['list']) {
-                    // change list types
-                    array_push($output,
+                    array_push($output, "${last_frame['item']}_close");
+                    if ($curr_frame['list'] != $last_frame['list']) {
+                        // change list types
+                        array_push($output,
                                "${last_frame['list']}_close",
                                "${curr_frame['list']}_open");
+                    }
                 }
-            }
-            // and finally, open tags for the new list item
-            array_push($output,
+                // and finally, open tags for the new list item
+                array_push($output,
                        "${curr_frame['item']}_open",
                        "${curr_frame['item']}_content_open");
-            if ($curr_frame['paras']) array_push($output, 'p_open');
-            $curr_frame['level'] = $level;
-            array_push($this->stack, $curr_frame);
+                if ($curr_frame['paras']) array_push($output, 'p_open');
+                $curr_frame['level'] = $level;
+                array_push($this->stack, $curr_frame);
+            }
             break;
         case DOKU_LEXER_UNMATCHED:
             $output = $match;
             break;
         }
         return array($state, $output, $level);
-    }
-    function _interpret_match($match) {
-        $tag_table = array(
-            '*' => 'u_li',
-            '-' => 'o_li',
-            '?' => 'dt',
-            ':' => 'dd',
-        );
-        $tag = $tag_table[substr($match, -1)];
-        return array(
-            'depth' => count(explode('  ', str_replace("\t", '  ', $match))),
-            'list' => substr($tag, 0, 1) . 'l',
-            'item' => substr($tag, -2),
-            'paras' => (substr($match, -1) == substr($match, -2, 1)),
-        );
     }
 
     /*
