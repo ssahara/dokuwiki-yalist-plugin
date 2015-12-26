@@ -1,18 +1,20 @@
 <?php
-/*
- * This plugin extends DokuWiki's list markup syntax to allow definition lists
+/**
+ * DokuWiki Plugin ExtList (Syntax component)
+ *
+ * This plugin extends DokuWiki's list markup syntax to allow descriptionn lists
  * and list items with multiple paragraphs. The complete syntax is as follows:
  *
  *
  *   - ordered list item            [<ol><li>]  <!-- as standard syntax -->
  *   * unordered list item          [<ul><li>]  <!-- as standard syntax -->
- *   ? definition list term         [<dl><dt>]
- *   : definition list definition   [<dl><dd>]
+ *   ? description list term        [<dl><dt>]
+ *   : description list item        [<dl><dd>]
  *
  *   -- ordered list item w/ multiple paragraphs
  *   ** unordered list item w/ multiple paragraphs
- *   :: definition list definition w/multiple paragraphs
- *   .. new paragraph in --, **, or ::
+ *   :: description list item w/multiple paragraphs
+ *   .. new paragraph in ether --, **, or ::
  *
  *
  * Lists can be nested within lists, just as in the standard DokuWiki syntax.
@@ -25,16 +27,44 @@ if (!defined('DOKU_INC')) die();
 
 class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
 
-    protected $entry_pattern = '(?:--?|\*\*?|\?|::?)';
-    protected $match_pattern = '(?:--?|\*\*?|\?|::?|\.\.)';
-    protected $exit_pattern  = '\n';
+    protected $entry_pattern = '(?:--?|\*\*?|\?|::?) *';
+    protected $match_pattern = '(?:--?|\*\*?|\?|::?|\.\.) *';
+    protected $exit_pattern  = '\n(?=\n)';
 
     protected $pluginMode;
+    protected $stack = array();
+    protected $markup = array();
+    protected $tags_map = array();
+
+    protected $use_div = true;
 
     public function __construct() {
         $this->pluginMode = substr(get_class($this), 7); // drop 'syntax_' from class name
+
+        // markup for list items
+        $this->markup = array(
+            '-'  => 'ol',   // <ol> <li><div>   ...    </div></li>
+            '--' => 'olp',  // <ol> <li><div><p>...</p></div></li>
+            '*'  => 'ul',   // <ul> <li><div>   ...    </div></li>
+            '**' => 'ulp',  // <ul> <li><div><p>...</p></div></li>
+            '?'  => 'dt',   // <dl> <dt><div>   ...    </div></dt>
+            ':'  => 'dd',   // <dl> <dd><div>   ...    </div></dd>
+            '::' => 'ddp',  // <dl> <dd><div><p>...</p></div></dd>
+            '..' => 'p',    //               <p>...</p>
+        );
+
+        // prefix and surffix of html tags
+        /* HTML RULE: <ul>タグや<ol>タグの中には<li>タグ以外は入れてはいけない */
+        $this->tags_map = array(
+            'ol' => array("\n","\n"),  '/ol' => array("","\n"),
+            'ul' => array("\n","\n"),  '/ul' => array("","\n"),
+            'dl' => array("\n","\n"),  '/dl' => array("","\n"),
+            'li' => array("  ",""),    '/li' => array("","\n"),
+            'dt' => array("  ",""),    '/dt' => array("","\n"),
+            'dd' => array("  ","\n"),  '/dd' => array("","\n"),
+            'p'  => array("\n",""),    '/p'  => array("","\n"),
+        );
     }
-    protected $stack = array();
 
     function getType() { return 'container'; }
     function getSort() { return 9; } // just before listblock (10)
@@ -54,245 +84,230 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
     }
 
 
-    private function _interpret_match($match) {
-        $tag_table = array(
-                '*' => 'u_li',
-                '-' => 'o_li',
-                '?' => 'dt',
-                ':' => 'dd',
-                '.' => 'p',
-        );
-        $tag = $tag_table[substr($match, -1)];  // '\n  --'
-        return array(
-            'depth' => count(explode('  ', str_replace("\t", '  ', $match))),
-            'list' => ($tag == 'p') ? ''  : substr($tag, 0, 1).'l',   // ul, ol, dl or blank
-            'item' => ($tag == 'p') ? 'p' : substr($tag, -2),         // li, dt, dd or p
-            'paras' => (substr($match, -1) == substr($match, -2, 1)), // bool
-        );
+    protected function _interpret($match) {
+        $type = $this->markup[trim($match)];
+        $depth = substr_count(str_replace("\t", '  ', $match),'  ');
+        return array($depth, $type);
+    }
+
+
+    private function _listTag($type) {
+        return $type[0].'l'; // = [ul|ol|dl]
+    }
+    private function _itemTag($type) {
+        return ($type[0] == 'd') ? substr($type,0,2) : 'li';
+    }
+    private function _isParagraph($type) {
+        return (substr($type, -1) == 'p');
+    }
+    private function _isListTypeChanged($type0, $type1) {
+        return (strncmp($type0, $type1, 1) !== 0);
+    }
+
+    /**
+     * helper function to simplify writing plugin calls to the instruction list
+     * first three arguments are passed to function render as $data
+     * Note: this function was used in the DW exttab3 plugin.
+     */
+    protected function _writeCall($tag, $attr, $state, $pos, $match, $handler) {
+        $handler->addPluginCall($this->getPluginName(),
+            array($state, $tag, $attr), $state, $pos, $match);
     }
 
 
     function handle($match, $state, $pos, Doku_Handler $handler) {
-        $output = array();
-        $level = 0;
+
         switch ($state) {
         case DOKU_LEXER_ENTER:
-            $frame = $this->_interpret_match($match);
-            $level = $frame['level'] = 1;
-            array_push($output,
-                       "${frame['list']}_open",
-                       "${frame['item']}_open",
-                       "${frame['item']}_content_open");
-            if ($frame['paras']) array_push($output, 'p_open');
-            array_push($this->stack, $frame);
-            break;
-        case DOKU_LEXER_EXIT:
-            $close_content = true;
-            while ($frame = array_pop($this->stack)) {
-                // for the first frame we pop off the stack, we'll need to
-                // close the content tag; for the rest it will have been
-                // closed already
-                if ($close_content) {
-                    if ($frame['paras']) array_push($output, 'p_close');
-                    array_push($output, "${frame['item']}_content_close");
-                    $close_content = false;
-                }
-                array_push($output,
-                           "${frame['item']}_close",
-                           "${frame['list']}_close");
-            }
-            break;
-        case DOKU_LEXER_MATCHED:
-            $curr_frame = $this->_interpret_match($match);
-            $last_frame = end($this->stack);
+            list ($depth, $type) = $this->_interpret($match);
+            $n = 1;  // order of the current list item
+            $data = array($depth, $type, $n);
+            array_push($this->stack, $data);
 
-            if ($curr_frame['item'] == 'p') { // paragraph
-                // new paragraphs cannot be deeper than the current depth,
-                // but they may be shallower
-                $para_depth = $curr_frame['depth'];
-                $close_content = true;
-                while ($para_depth < $last_frame['depth'] && count($this->stack) > 1) {
-                    if ($close_content) {
-                        if ($last_frame['paras']) array_push($output, 'p_close');
-                        array_push($output, "${last_frame['item']}_content_close");
-                        $close_content = false;
-                    }
-                    array_push($output,
-                               "${last_frame['item']}_close",
-                               "${last_frame['list']}_close");
-                    array_pop($this->stack);
-                    $last_frame = end($this->stack);
-                }
-                if ($last_frame['paras']) {
-                    if ($close_content)
-                        // depth did not change
-                        array_push($output, 'p_close', 'p_open');
-                    else
-                        array_push($output,
-                                   "${last_frame['item']}_content_open",
-                                   'p_open');
-                } else {
-                    // let's just pretend we didn't match...
-                    $state = DOKU_LEXER_UNMATCHED;
-                    $output = $match;
-                }
-            } else { // list item
-                $curr_frame = $this->_interpret_match($match);
-                if ($curr_frame['depth'] > $last_frame['depth']) {
-                    // going one level deeper
-                    $level = $last_frame['level'] + 1;
-                    if ($last_frame['paras']) array_push($output, 'p_close');
-                    array_push($output,
-                           "${last_frame['item']}_content_close",
-                           "${curr_frame['list']}_open");
-                } else {
-                    // same depth, or getting shallower
-                    $close_content = true;
-                    // keep popping frames off the stack until we find a frame
-                    // that's at least as deep as this one, or until only the
-                    // bottom frame (i.e. the initial list markup) remains
-                    while ($curr_frame['depth'] < $last_frame['depth'] &&
-                        count($this->stack) > 1)
-                    {
-                        // again, we need to close the content tag only for
-                        // the first frame popped off the stack
-                        if ($close_content) {
-                            if ($last_frame['paras']) array_push($output, 'p_close');
-                            array_push($output, "${last_frame['item']}_content_close");
-                            $close_content = false;
-                        }
-                        array_push($output,
-                               "${last_frame['item']}_close",
-                               "${last_frame['list']}_close");
-                        array_pop($this->stack);
-                        $last_frame = end($this->stack);
-                    }
-                    // pull the last frame off the stack;
-                    // it will be replaced by the current frame
-                    array_pop($this->stack);
-                    $level = $last_frame['level'];
-                    if ($close_content) {
-                        if ($last_frame['paras']) array_push($output, 'p_close');
-                        array_push($output, "${last_frame['item']}_content_close");
-                        $close_content = false;
-                    }
-                    array_push($output, "${last_frame['item']}_close");
-                    if ($curr_frame['list'] != $last_frame['list']) {
-                        // change list types
-                        array_push($output,
-                               "${last_frame['list']}_close",
-                               "${curr_frame['list']}_open");
-                    }
-                }
-                // and finally, open tags for the new list item
-                array_push($output,
-                       "${curr_frame['item']}_open",
-                       "${curr_frame['item']}_content_open");
-                if ($curr_frame['paras']) array_push($output, 'p_open');
-                $curr_frame['level'] = $level;
-                array_push($this->stack, $curr_frame);
+            // open list tag [ul|ol|dl]
+            $this->_writeCall($this->_listTag($type),'',DOKU_LEXER_ENTER, $pos,$match,$handler);
+            // open item tag [li|dt|dd]
+            $attr = (substr($type,1,2) == 'l') ? 'class="level'.$depth.'"' : '';
+            $this->_writeCall($this->_itemTag($type),$attr,DOKU_LEXER_ENTER, $pos,$match,$handler);
+            // open div
+            if ($this->use_div) {
+                $this->_writeCall('div','',DOKU_LEXER_ENTER, $pos,$match,$handler);
+            }
+            // open p if necessary
+            if ($this->_isParagraph($type)) {
+                $this->_writeCall('p','',DOKU_LEXER_ENTER, $pos,$match,$handler);
             }
             break;
+
         case DOKU_LEXER_UNMATCHED:
-            $output = $match;
+            $handler->base($match, $state, $pos);    // cdata --- use base() as _writeCall() is prefixed for private/protected
             break;
-        }
-        return array($state, $output, $level);
+
+        case DOKU_LEXER_EXIT:
+            // list ($depth, $type) = $this->_interpret($match);
+            // $depth = 0
+            error_log('yalist: EXIT ');
+
+        case DOKU_LEXER_MATCHED:
+            list ($prev_depth, $prev_type, $prev_n) = array_pop($this->stack); // スタック取り崩し
+            list ($depth, $type) = $this->_interpret($match);
+
+            error_log('yalist: prev0='.$prev_depth.' '.$prev_type.' '.$prev_n);
+
+            // 該当する場合 li_div 内の p を閉じる(/p発行)
+            if ($this->_isParagraph($prev_type)) {
+                $this->_writeCall('p','',DOKU_LEXER_EXIT, $pos,$match,$handler);
+            }
+            // リスト深さが浅くなる場合 深いリストは閉じてしまう
+            $close_div = true;
+            while ( $prev_depth > $depth ) {
+                if ($close_div && $this->use_div && !empty($prev_type)) {
+                    // close div
+                    $this->_writeCall('div','',DOKU_LEXER_EXIT, $pos,$match,$handler);
+                    error_log('yalist close div1 : curr='.$depth.' '.$type.' '.$n);
+                }
+                // close item tag [li|dt|dd]
+                $this->_writeCall($this->_itemTag($prev_type),'',DOKU_LEXER_EXIT, $pos,$match,$handler);
+                // close list tag [ul|ol|dl]
+                $this->_writeCall($this->_listTag($prev_type),'',DOKU_LEXER_EXIT, $pos,$match,$handler);
+
+                list ($prev_depth, $prev_type, $prev_n) = array_pop($this->stack);
+                error_log('yalist: prev='.$prev_depth.' '.$prev_type.' '.$prev_n);
+                $close_div = false;
+            }
+            if ($state == DOKU_LEXER_EXIT) {
+                error_log('yalist: EXIT NOW: prev_depth='.$prev_depth );
+            }
+            if ($state == DOKU_LEXER_EXIT) break;
+            //この段階で 直前と現在の深さは同じになる。
+
+            error_log('yalist: curr='.$depth.' '.$type.' '.$n);
+
+            // p でリストを浅くすることはありうるが、深くすることはできない
+            // 直前のアイテムタイプが p付きでない場合は p付きだったことにする
+            if ($type == 'p') {
+                $this->_writeCall('p','',DOKU_LEXER_ENTER, $pos,$match,$handler);
+                $depth = $prev_depth;
+                $n     = $prev_n;
+                if ($this->_isParagraph($prev_type)){
+                    $type = $prev_type;
+                } else {
+                    $type = $prev_type.'p';
+                }
+                // 最初に取り崩したスタックを元に戻す
+                $data = array($depth, $type, $n); // スタックの末端を更新
+                array_push($this->stack, $data);
+                break;
+            }
+
+            // item の div を閉じる必要があるかを判断
+            if ($prev_depth < $depth) {
+                // close div
+                if ($this->use_div) {
+                    $this->_writeCall('div','',DOKU_LEXER_EXIT, $pos,$match,$handler);
+                    error_log('yalist close div : curr='.$depth.' '.$type.' '.$n);
+                }
+                // close item tag [li|dt|dd]
+                // リストが深くなる場合、ここで /li を発行してはならない。
+                //$this->_writeCall($this->_itemTag($prev_type),'',DOKU_LEXER_EXIT, $pos,$match,$handler);
+
+                // リストが深くなる場合は 直前のリストアイテムを閉じないため 
+                // 最初に取り崩したスタックを元に戻す
+                $data = array($prev_depth, $prev_type, $prev_n);
+                array_push($this->stack, $data);
+            }
+
+            // list を閉じる必要があるかを判断
+            if ($prev_depth == $depth) {
+                // リスト深さが同じ場合は /li を発行する
+                $this->_writeCall($this->_itemTag($prev_type),'',DOKU_LEXER_EXIT, $pos,$match,$handler);
+
+                if ($this->_isListTypeChanged($prev_type, $type)) {
+                    // close list tag [ul|ol|dl]
+                    $this->_writeCall($this->_listTag($prev_type),'',DOKU_LEXER_EXIT, $pos,$match,$handler);
+                    $prev_n = 0; // リスト種類が変わるため、リセット
+                }
+            }
+
+            // open list if necessary
+            // 必要な場合 リストの開始
+            if (($prev_depth < $depth) || ($prev_n == 0)) {
+                // リストが深くなるか、異なる種類のリストを開始する場合
+                $n = 1;
+                // open list tag [ul|ol|dl]
+                $this->_writeCall($this->_listTag($type),'',DOKU_LEXER_ENTER, $pos,$match,$handler);
+            } else {
+                // リスト深さが同じ、リストの種類も同じ場合
+                $n = $prev_n + 1; // リストアイテムが増える
+            }
+
+            // open item tag [li|dt|dd]
+            $attr = (substr($type,1,2) == 'l') ? 'class="level'.$depth.'"' : '';
+            $this->_writeCall($this->_itemTag($type),$attr,DOKU_LEXER_ENTER, $pos,$match,$handler);
+            // open div
+            if ($this->use_div) {
+                $this->_writeCall('div','',DOKU_LEXER_ENTER, $pos,$match,$handler);
+            }
+            // open p if necessary
+            if ($this->_isParagraph($type)) {
+                $this->_writeCall('p','',DOKU_LEXER_ENTER, $pos,$match,$handler);
+            }
+
+            $data = array($depth, $type, $n); // スタックの末端を更新
+            array_push($this->stack, $data);
+
+        } // end of switch
+        return true;
     }
+
 
     /*
      * Create output
      */
     function render($format, Doku_Renderer $renderer, $data) {
-
         switch ($format) {
             case 'xhtml':
                 return $this->render_xhtml($renderer, $data);
-            case 'latex':
-                return $this->render_latex($renderer, $data);
+            //case 'latex':
+            //    $latex = $this->loadHelper('yalist_latex');
+            //    return $latex->render($renderer, $data);
+            //case 'odt':
+            //    $odt = $this->loadHelper('yalist_odt');
+            //    return $odt->render($renderer, $data);
             default:
                 return false;
         }
     }
 
     protected function render_xhtml(Doku_Renderer $renderer, $data) {
-        list($state, $output, $level) = $data;
 
+        list($state, $tag, $attr) = $data;
         switch ($state) {
+            case DOKU_LEXER_ENTER:   // open tag
+                $renderer->doc.= $this->_open($tag, $attr);
+                break;
+            case DOKU_LEXER_MATCHED: // defensive, shouldn't occur
             case DOKU_LEXER_UNMATCHED:
-                $renderer->doc .= $renderer->_xmlEntities($output);
-                return true;
-            case DOKU_LEXER_EXIT:
-            default:
-                $markup = '';
-                foreach ($output as $i) {
-                  switch ($i) {
-                    case 'ol_open':  $markup = "<ol>\n"; break;
-                    case 'ol_close': $markup = "</ol>\n"; break;
-                    case 'ul_open':  $markup = "<ul>\n"; break;
-                    case 'ul_close': $markup = "</ul>\n"; break;
-                    case 'dl_open':  $markup = "<dl>\n"; break;
-                    case 'dl_close': $markup = "</dl>\n"; break;
-                    case 'li_open':  $markup = "<li class=\"level${level}\">"; break;
-                    case 'li_content_open':  $markup = "<div class=\"li\">\n"; break;
-                    case 'li_content_close': $markup = "\n</div>"; break;
-                    case 'li_close':         $markup = "</li>\n";  break;
-                    case 'dt_open':  $markup = "<dt class=\"level${level}\">"; break;
-                    case 'dt_content_open':  $markup = "<span class=\"dt\">"; break;
-                    case 'dt_content_close': $markup = "</span>"; break;
-                    case 'dt_close':         $markup = "</dt>\n"; break;
-                    case 'dd_open':  $markup = "<dd class=\"level${level}\">"; break;
-                    case 'dd_content_open':  $markup = "<div class=\"dd\">\n"; break;
-                    case 'dd_content_close': $markup = "\n</div>"; break;
-                    case 'dd_close': $markup = "</dd>\n"; break;
-                    case 'p_open':   $markup = "<p>\n";   break;
-                    case 'p_close':  $markup = "\n</p>";  break;
-                  }
-                  $renderer->doc .= $markup;
-                }
-                if ($state == DOKU_LEXER_EXIT) $renderer->doc .= "\n";
-                return true;
+                $renderer->cdata($tag);
+                break;
+            case DOKU_LEXER_EXIT:    // close tag
+                $renderer->doc.= $this->_close($tag);
+                break;
         }
     }
 
-    protected function render_latex(Doku_Renderer $renderer, $data) {
-        list($state, $output, $level) = $data;
-
-        switch ($state) {
-            case DOKU_LEXER_UNMATCHED:
-                $renderer->doc .= $renderer->_xmlEntities($output);
-                return true;
-            case DOKU_LEXER_EXIT:
-            default:
-                $markup = '';
-                foreach ($output as $i) {
-                  switch ($i) {
-                    case 'ol_open':  $markup = "\\begin{enumerate}\n"; break;
-                    case 'ol_close': $markup = "\\end{enumerate}\n"; break;
-                    case 'ul_open':  $markup = "\\begin{itemize}\n"; break;
-                    case 'ul_close': $markup = "\\end{itemize}\n"; break;
-                    case 'dl_open':  $markup = "\\begin{description}\n"; break;
-                    case 'dl_close': $markup = "\\end{description}\n"; break;
-                    case 'li_open':  $markup = "\item "; break;
-                    case 'li_content_open':  break;
-                    case 'li_content_close': break;
-                    case 'li_close': $markup = "\n"; break;
-                    case 'dt_open':  $markup = "\item["; break;
-                    case 'dt_content_open':  break;
-                    case 'dt_content_close': break;
-                    case 'dt_close': $markup = "] "; break;
-                    case 'dd_open':          break;
-                    case 'dd_content_open':  break;
-                    case 'dd_content_close': break;
-                    case 'dd_close': $markup = "\n"; break;
-                    case 'p_open':   $markup = "\n"; break;
-                    case 'p_close':  $markup = "\n"; break;
-                  }
-                  $renderer->doc .= $markup;
-                }
-                if ($state == DOKU_LEXER_EXIT) $renderer->doc .= "\n";
-                return true;
-        }
+    protected function _open($tag, $attr=NULL) {
+        if (!is_null($attr)) $attr = ' '.$attr;
+        $before = $this->tags_map[$tag][0];
+        $after  = $this->tags_map[$tag][1];
+        return $before.'<'.$tag.$attr.'>'.$after;
     }
+
+    protected function _close($tag) {
+        $before = $this->tags_map['/'.$tag][0];
+        $after  = $this->tags_map['/'.$tag][1];
+        return $before.'</'.$tag.'>'.$after;
+    }
+
 
 }
