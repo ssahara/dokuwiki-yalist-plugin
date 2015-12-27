@@ -27,8 +27,8 @@ if (!defined('DOKU_INC')) die();
 
 class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
 
-    protected $entry_pattern = '(?:--?|\*\*?|\?|::?) *';
-    protected $match_pattern = '(?:--?|\*\*?|\?|::?|\.\.) *';
+    protected $entry_pattern = '(?:--?\d*|\*\*?|\?|::?) *';
+    protected $match_pattern = '(?:--?\d*|\*\*?|\?|::?|\.\.) *';
     protected $exit_pattern  = '\n(?=\n)';
 
     protected $pluginMode;
@@ -40,18 +40,6 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
 
     public function __construct() {
         $this->pluginMode = substr(get_class($this), 7); // drop 'syntax_' from class name
-
-        // markup for list items
-        $this->markup = array(
-            '-'  => 'ol',   // <ol> <li><div>   ...    </div></li>
-            '--' => 'olp',  // <ol> <li><div><p>...</p></div></li>
-            '*'  => 'ul',   // <ul> <li><div>   ...    </div></li>
-            '**' => 'ulp',  // <ul> <li><div><p>...</p></div></li>
-            '?'  => 'dt',   // <dl> <dt><div>   ...    </div></dt>
-            ':'  => 'dd',   // <dl> <dd><div>   ...    </div></dd>
-            '::' => 'ddp',  // <dl> <dd><div><p>...</p></div></dd>
-            '..' => 'p',    //               <p>...</p>
-        );
 
         // prefix and surffix of html tags
         /* HTML RULE: <ul>タグや<ol>タグの中には<li>タグ以外は入れてはいけない */
@@ -85,24 +73,45 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
 
 
     protected function _interpret($match) {
-        $type = $this->markup[trim($match)];
         $depth = substr_count(str_replace("\t", '  ', $match),'  ');
-        return array($depth, $type);
+        preg_match('/([-*;?:.]{1,2})(\d*)/', $match, $matches);
+        $mk = $matches[1];
+        $n = (count($matches) >1) ? $matches[2] : NULL;
+        return array($depth, $mk, $n);
     }
 
 
-    private function _listTag($type) {
-        return $type[0].'l'; // = [ul|ol|dl]
+    private function listLevel($match) {
+        return substr_count(str_replace("\t", '  ', $match),'  ');
     }
-    private function _itemTag($type) {
-        return ($type[0] == 'd') ? substr($type,0,2) : 'li';
+    private function listTag($mk) {
+        $c = substr($mk, 0, 1);
+        switch ($c) {
+            case '?' : return 'dl';
+            case ':' : return 'dl';
+            case '-' : return 'ol';
+            case '*' : return 'ul';
+            default  : return false;
+        }
     }
-    private function _isParagraph($type) {
-        return (substr($type, -1) == 'p');
+    private function itemTag($mk) {
+        $c = substr($mk, 0, 1);
+        switch ($c) {
+            case '?' : return 'dt';
+            case ':' : return 'dd';
+            case '-' : return 'li';
+            case '*' : return 'li';
+            default  : return false;
+        }
     }
-    private function _isListTypeChanged($type0, $type1) {
-        return (strncmp($type0, $type1, 1) !== 0);
+    private function isParagraph($mk) {
+        return (strlen($mk) >1);
     }
+    private function isListTypeChanged($mk0, $mk1) {
+        return (strncmp($this->listTag($mk0), $this->listTag($mk1), 1) !== 0);
+    }
+
+
 
     /**
      * helper function to simplify writing plugin calls to the instruction list
@@ -114,29 +123,74 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
             array($state, $tag, $attr), $state, $pos, $match);
     }
 
+    // open or close list tag [ul|ol|dl]
+    private function _openList($mk, $start, $pos, $match, $handler) {
+        $tag = $this->listTag($mk);
+        if (($tag == 'ol') && is_numeric($start)) {
+            $attr = 'start='.$start;
+        } else $attr = '';
+        $this->_writeCall($tag,$attr,DOKU_LEXER_ENTER, $pos,$match,$handler);
+    }
+    private function _closeList($mk, $pos, $match, $handler) {
+        $tag = $this->listTag($mk);
+        $this->_writeCall($tag,'',DOKU_LEXER_EXIT, $pos,$match,$handler);
+    }
 
+    // open or close list item tag [li|dt|dd]
+    private function _openItem($mk, $num, $pos, $match, $handler) {
+        $list = $this->listTag($mk);
+        $tag = $this->itemTag($mk);
+        if (($list == 'ol') && is_numeric($num)) {
+            $attr = ' value='.$num;
+        } else $attr = '';
+        $this->_writeCall($tag,$attr,DOKU_LEXER_ENTER, $pos,$match,$handler);
+    }
+    private function _closeItem($mk, $pos, $match, $handler) {
+        $tag = $this->itemTag($mk);
+        $this->_writeCall($tag,'',DOKU_LEXER_EXIT, $pos,$match,$handler);
+    }
+
+    private function _openDiv($mk, $pos, $match, $handler) {
+        $tag = 'div';
+        $item = $this->itemTag($mk);
+        if ($item == 'li') {
+            $attr = 'class="li"';
+        } else $attr ='';
+        $this->_writeCall($tag,$attr,DOKU_LEXER_ENTER, $pos,$match,$handler);
+    }
+    private function _closeDiv($pos, $match, $handler) {
+        $tag = 'div';
+        $this->_writeCall($tag,'',DOKU_LEXER_EXIT, $pos,$match,$handler);
+    }
+
+    private function _openParagraph($pos, $match, $handler) {
+        $this->_writeCall('p','',DOKU_LEXER_ENTER, $pos,$match,$handler);
+    }
+    private function _closeParagraph($pos, $match, $handler) {
+        $this->_writeCall('p','',DOKU_LEXER_EXIT, $pos,$match,$handler);
+    }
+
+    /**
+     * Handle the match
+     */
     function handle($match, $state, $pos, Doku_Handler $handler) {
 
         switch ($state) {
         case DOKU_LEXER_ENTER:
-            list ($depth, $type) = $this->_interpret($match);
-            $n = 1;  // order of the current list item
-            $data = array($depth, $type, $n);
-            array_push($this->stack, $data);
+            list ($depth1, $mk1, $n1) = $this->_interpret($match);
+            error_log('yalist: enter='.$depth1.' '.$mk1.' '.$n1);
 
             // open list tag [ul|ol|dl]
-            $this->_writeCall($this->_listTag($type),'',DOKU_LEXER_ENTER, $pos,$match,$handler);
+            $this->_openList($mk1, $n1, $pos,$match,$handler);
             // open item tag [li|dt|dd]
-            $attr = (substr($type,1,2) == 'l') ? 'class="level'.$depth.'"' : '';
-            $this->_writeCall($this->_itemTag($type),$attr,DOKU_LEXER_ENTER, $pos,$match,$handler);
+            $this->_openItem($mk1, $n1, $pos, $match, $handler);
             // open div
-            if ($this->use_div) {
-                $this->_writeCall('div','',DOKU_LEXER_ENTER, $pos,$match,$handler);
-            }
+            if ($this->use_div) $this->_openDiv($mk1, $pos,$match,$handler);
             // open p if necessary
-            if ($this->_isParagraph($type)) {
-                $this->_writeCall('p','',DOKU_LEXER_ENTER, $pos,$match,$handler);
-            }
+            if ($this->isParagraph($mk1)) $this->_openParagraph($pos,$match,$handler);
+
+            $data = array($depth1, $mk1, $n1);
+            array_push($this->stack, $data);
             break;
 
         case DOKU_LEXER_UNMATCHED:
@@ -149,111 +203,99 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
             error_log('yalist: EXIT ');
 
         case DOKU_LEXER_MATCHED:
-            list ($prev_depth, $prev_type, $prev_n) = array_pop($this->stack); // スタック取り崩し
-            list ($depth, $type) = $this->_interpret($match);
+            list ($depth0, $mk0, $n0) = array_pop($this->stack); // スタック取り崩し
+            list ($depth1, $mk1, $n1) = $this->_interpret($match);
 
-            error_log('yalist: prev0='.$prev_depth.' '.$prev_type.' '.$prev_n);
+            error_log('yalist: prev0='.$depth0.' '.$mk0.' '.$n0);
 
             // 該当する場合 li_div 内の p を閉じる(/p発行)
-            if ($this->_isParagraph($prev_type)) {
-                $this->_writeCall('p','',DOKU_LEXER_EXIT, $pos,$match,$handler);
-            }
+            if ($this->isParagraph($mk0)) $this->_closeParagraph($pos,$match,$handler);
+            
             // リスト深さが浅くなる場合 深いリストは閉じてしまう
             $close_div = true;
-            while ( $prev_depth > $depth ) {
-                if ($close_div && $this->use_div && !empty($prev_type)) {
+            while ( $depth0 > $depth1 ) {
+                if ($close_div && $this->use_div && !empty($mk0)) {
                     // close div
-                    $this->_writeCall('div','',DOKU_LEXER_EXIT, $pos,$match,$handler);
-                    error_log('yalist close div1 : curr='.$depth.' '.$type.' '.$n);
+                    $this->_closeDiv($pos,$match,$handler);
+                    error_log('yalist close div1 : curr='.$depth1.' '.$mk1.' '.$n1);
                 }
                 // close item tag [li|dt|dd]
-                $this->_writeCall($this->_itemTag($prev_type),'',DOKU_LEXER_EXIT, $pos,$match,$handler);
+                $this->_closeItem($mk0, $pos,$match,$handler);
                 // close list tag [ul|ol|dl]
-                $this->_writeCall($this->_listTag($prev_type),'',DOKU_LEXER_EXIT, $pos,$match,$handler);
+                $this->_closeList($mk0, $pos,$match,$handler);
 
-                list ($prev_depth, $prev_type, $prev_n) = array_pop($this->stack);
-                error_log('yalist: prev='.$prev_depth.' '.$prev_type.' '.$prev_n);
+                list ($depth0, $mk0, $n0) = array_pop($this->stack);
+                error_log('yalist: prev='.$depth0.' '.$mk0.' '.$n0);
                 $close_div = false;
             }
             if ($state == DOKU_LEXER_EXIT) {
-                error_log('yalist: EXIT NOW: prev_depth='.$prev_depth );
+                error_log('yalist: EXIT NOW: prev_depth='.$depth0 );
+                break;
             }
-            if ($state == DOKU_LEXER_EXIT) break;
             //この段階で 直前と現在の深さは同じになる。
 
-            error_log('yalist: curr='.$depth.' '.$type.' '.$n);
+            error_log('yalist: curr='.$depth1.' '.$mk1.' '.$n1);
 
             // p でリストを浅くすることはありうるが、深くすることはできない
             // 直前のアイテムタイプが p付きでない場合は p付きだったことにする
-            if ($type == 'p') {
-                $this->_writeCall('p','',DOKU_LEXER_ENTER, $pos,$match,$handler);
-                $depth = $prev_depth;
-                $n     = $prev_n;
-                if ($this->_isParagraph($prev_type)){
-                    $type = $prev_type;
-                } else {
-                    $type = $prev_type.'p';
-                }
+            if ($mk1 == '..') {
+                $this->_openParagraph($pos,$match,$handler);
+                $depth1 = $depth0;
+                $n1     = $n0;
+                $mk1 = ($this->isParagraph($mk0)) ? $mk0 : $mk0.$mk0;
                 // 最初に取り崩したスタックを元に戻す
-                $data = array($depth, $type, $n); // スタックの末端を更新
+                $data = array($depth1, $mk1, $n1); // スタックの末端を更新
                 array_push($this->stack, $data);
                 break;
             }
 
             // item の div を閉じる必要があるかを判断
-            if ($prev_depth < $depth) {
+            if ($depth0 < $depth1) {
                 // close div
                 if ($this->use_div) {
-                    $this->_writeCall('div','',DOKU_LEXER_EXIT, $pos,$match,$handler);
-                    error_log('yalist close div : curr='.$depth.' '.$type.' '.$n);
+                    $this->_closeDiv($pos,$match,$handler);
+                    error_log('yalist close div : curr='.$depth1.' '.$mk1.' '.$n1);
                 }
                 // close item tag [li|dt|dd]
                 // リストが深くなる場合、ここで /li を発行してはならない。
-                //$this->_writeCall($this->_itemTag($prev_type),'',DOKU_LEXER_EXIT, $pos,$match,$handler);
+                //$this->_writeCall($this->itemTag($mk0),'',DOKU_LEXER_EXIT, $pos,$match,$handler);
 
-                // リストが深くなる場合は 直前のリストアイテムを閉じないため 
-                // 最初に取り崩したスタックを元に戻す
-                $data = array($prev_depth, $prev_type, $prev_n);
+                // リストが深くなる場合は 最初に取り崩したスタックを元に戻す
+                $data = array($depth0, $mk0, $n0);
                 array_push($this->stack, $data);
             }
 
             // list を閉じる必要があるかを判断
-            if ($prev_depth == $depth) {
+            if ($depth0 == $depth1) {
                 // リスト深さが同じ場合は /li を発行する
-                $this->_writeCall($this->_itemTag($prev_type),'',DOKU_LEXER_EXIT, $pos,$match,$handler);
+                $this->_closeItem($mk0, $pos,$match,$handler);
 
-                if ($this->_isListTypeChanged($prev_type, $type)) {
+                if ($this->isListTypeChanged($mk0, $mk1)) {
                     // close list tag [ul|ol|dl]
-                    $this->_writeCall($this->_listTag($prev_type),'',DOKU_LEXER_EXIT, $pos,$match,$handler);
-                    $prev_n = 0; // リスト種類が変わるため、リセット
+                    $this->_closeList($mk0, $pos,$match,$handler);
+                    $n0 = 0; // リスト種類が変わるため、リセット
                 }
             }
 
             // open list if necessary
-            // 必要な場合 リストの開始
-            if (($prev_depth < $depth) || ($prev_n == 0)) {
+            if (($depth0 < $depth1) || ($n0 == 0)) {
                 // リストが深くなるか、異なる種類のリストを開始する場合
-                $n = 1;
                 // open list tag [ul|ol|dl]
-                $this->_writeCall($this->_listTag($type),'',DOKU_LEXER_ENTER, $pos,$match,$handler);
+                if (!is_numeric($n1)) $n1 = 1;
+                $this->_openList($mk1, $n1, $pos,$match,$handler);
             } else {
                 // リスト深さが同じ、リストの種類も同じ場合
-                $n = $prev_n + 1; // リストアイテムが増える
+                if (!is_numeric($n1)) $n1 = $n0  +1;
             }
 
             // open item tag [li|dt|dd]
-            $attr = (substr($type,1,2) == 'l') ? 'class="level'.$depth.'"' : '';
-            $this->_writeCall($this->_itemTag($type),$attr,DOKU_LEXER_ENTER, $pos,$match,$handler);
+            $this->_openItem($mk1, $n1, $pos,$match,$handler);
             // open div
-            if ($this->use_div) {
-                $this->_writeCall('div','',DOKU_LEXER_ENTER, $pos,$match,$handler);
-            }
+            if ($this->use_div) $this->_openDiv($mk1, $pos,$match,$handler);
             // open p if necessary
-            if ($this->_isParagraph($type)) {
-                $this->_writeCall('p','',DOKU_LEXER_ENTER, $pos,$match,$handler);
-            }
+            if ($this->isParagraph($mk1)) $this->_openParagraph($pos,$match,$handler);
 
-            $data = array($depth, $type, $n); // スタックの末端を更新
+            $data = array($depth1, $mk1, $n1); // スタックの末端を更新
             array_push($this->stack, $data);
 
         } // end of switch
