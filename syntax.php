@@ -79,10 +79,6 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
         return array($depth, $mk, $n);
     }
 
-
-    private function listLevel($match) {
-        return substr_count(str_replace("\t", '  ', $match),'  ');
-    }
     private function listTag($mk) {
         $c = substr($mk, 0, 1);
         switch ($c) {
@@ -93,6 +89,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
             default  : return false;
         }
     }
+
     private function itemTag($mk) {
         $c = substr($mk, 0, 1);
         switch ($c) {
@@ -103,13 +100,14 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
             default  : return false;
         }
     }
+
     private function isParagraph($mk) {
         return (strlen($mk) >1);
     }
+
     private function isListTypeChanged($mk0, $mk1) {
         return (strncmp($this->listTag($mk0), $this->listTag($mk1), 1) !== 0);
     }
-
 
 
     /**
@@ -153,13 +151,16 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
     private function _openDiv($mk, $pos, $match, $handler) {
         $tag = 'div';
         $item = $this->itemTag($mk);
+        if ($item == 'dt') return;
         if ($item == 'li') {
             $attr = 'class="li"';
         } else $attr ='';
         $this->_writeCall($tag,$attr,DOKU_LEXER_ENTER, $pos,$match,$handler);
     }
-    private function _closeDiv($pos, $match, $handler) {
+    private function _closeDiv($mk, $pos, $match, $handler) {
         $tag = 'div';
+        $item = $this->itemTag($mk);
+        if ($item == 'dt') return;
         $this->_writeCall($tag,'',DOKU_LEXER_EXIT, $pos,$match,$handler);
     }
 
@@ -180,7 +181,6 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
         case DOKU_LEXER_ENTER:
             list ($depth1, $mk1, $n1) = $this->_interpret($match);
             if (!is_numeric($n1)) $n1 = 1;
-            error_log('yalist: ENTER='.$depth1.' '.$mk1.' '.$n1);
 
             // open list tag [ul|ol|dl]
             $this->_openList($mk1, $n1, $pos,$match,$handler);
@@ -191,6 +191,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
             // open p if necessary
             if ($this->isParagraph($mk1)) $this->_openParagraph($pos,$match,$handler);
 
+            // add to stack
             $data = array($depth1, $mk1, $n1);
             array_push($this->stack, $data);
             break;
@@ -198,7 +199,6 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
         case DOKU_LEXER_UNMATCHED:
             // cdata --- use base() as _writeCall() is prefixed for private/protected
             $handler->base($match, $state, $pos);
-            error_log('yalist: unmatched='.$match);
             break;
 
         case DOKU_LEXER_EXIT:
@@ -206,37 +206,44 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
             // $depth = 0
 
         case DOKU_LEXER_MATCHED:
-            list ($depth0, $mk0, $n0) = array_pop($this->stack); // shorten the stack
+            // retrieve previous list item from stack
+            list ($depth0, $mk0, $n0) = array_pop($this->stack);
             list ($depth1, $mk1, $n1) = $this->_interpret($match);
-
-            error_log('yalist: prev0='.$depth0.' '.$mk0.' '.$n0);
 
             // close p if necessary
             if ($this->isParagraph($mk0)) $this->_closeParagraph($pos,$match,$handler);
 
-            // List item becomes shallower - close deeper list
-            $close_div = true;
-            while ( $depth0 > $depth1 ) {
-                if ($close_div && $this->use_div && !empty($mk0)) {
-                    // close div
-                    $this->_closeDiv($pos,$match,$handler);
-                    error_log('yalist close div in loop : curr='.$depth1.' '.$mk1.' '.$n1);
+            // close div if necessary
+            if ($mk1 == '..') {
+                // Paragraph markup
+                if ($depth0 > $depth1) {
+                    if ($this->use_div) $this->_closeDiv($mk0, $pos,$match,$handler);
+                } else {
+                    // new paragraph can not be deeper than previous depth
+                    // fix current depth quietly
+                    $depth1 = min($depth0, $depth1);
                 }
-                // close item tag [li|dt|dd]
+                // fix previous mark type
+                $mk0 = ($this->isParagraph($mk0)) ? $mk0 : $mk0.$mk0;
+            } else {
+                // List item markup
+                if ($depth0 >= $depth1) {
+                    if ($this->use_div) $this->_closeDiv($mk0, $pos,$match,$handler);
+                }
+            }
+
+            // List item becomes shallower - close deeper list
+            while ( $depth0 > $depth1 ) {
+                // close item [li|dt|dd]
                 $this->_closeItem($mk0, $pos,$match,$handler);
-                // close list tag [ul|ol|dl]
+                // close list [ul|ol|dl]
                 $this->_closeList($mk0, $pos,$match,$handler);
 
                 list ($depth0, $mk0, $n0) = array_pop($this->stack);
-                error_log('yalist: prev ='.$depth0.' '.$mk0.' '.$n0);
-                $close_div = false;
             }
             if ($state == DOKU_LEXER_EXIT) {
-                error_log('yalist: EXIT NOW: prev_depth='.$depth0 );
                 break;
             }
-
-            error_log('yalist: curr='.$depth1.' '.$mk1.' '.$n1);
 
             // Paragraph markup
             if ($mk1 == '..') {
@@ -252,12 +259,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
             }
 
             // List item markup
-            if ($depth0 < $depth1) {
-                // do not close the previous item, but close div if necessary
-                if ($this->use_div) {
-                    $this->_closeDiv($pos,$match,$handler);
-                    error_log('yalist close div : curr='.$depth1.' '.$mk1.' '.$n1);
-                }
+            if ($depth0 < $depth1) { // list becomes deeper
                 // restore stack
                 $data = array($depth0, $mk0, $n0);
                 array_push($this->stack, $data);
@@ -265,9 +267,8 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
             } else if ($depth0 == $depth1) {
                 // close item [li|dt|dd]
                 $this->_closeItem($mk0, $pos,$match,$handler);
-                // check if we need to close previous list
+                // close list [ul|ol|dl] if necessary
                 if ($this->isListTypeChanged($mk0, $mk1)) {
-                    // close list [ul|ol|dl]
                     $this->_closeList($mk0, $pos,$match,$handler);
                     $n0 = 0;
                 }
@@ -281,7 +282,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
                 if (!is_numeric($n1)) $n1 = $n0  +1;
             }
 
-            // open item tag [li|dt|dd]
+            // open item [li|dt|dd]
             $this->_openItem($mk1, $n1, $pos,$match,$handler);
             // open div
             if ($this->use_div) $this->_openDiv($mk1, $pos,$match,$handler);
@@ -354,6 +355,5 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
         $after  = $this->tags_map['/'.$tag][1];
         return $before.'</'.$tag.'>'.$after;
     }
-
 
 }
