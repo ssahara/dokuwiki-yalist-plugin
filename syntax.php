@@ -179,7 +179,8 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
         switch ($state) {
         case DOKU_LEXER_ENTER:
             list ($depth1, $mk1, $n1) = $this->_interpret($match);
-            error_log('yalist: enter='.$depth1.' '.$mk1.' '.$n1);
+            if (!is_numeric($n1)) $n1 = 1;
+            error_log('yalist: ENTER='.$depth1.' '.$mk1.' '.$n1);
 
             // open list tag [ul|ol|dl]
             $this->_openList($mk1, $n1, $pos,$match,$handler);
@@ -197,6 +198,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
         case DOKU_LEXER_UNMATCHED:
             // cdata --- use base() as _writeCall() is prefixed for private/protected
             $handler->base($match, $state, $pos);
+            error_log('yalist: unmatched='.$match);
             break;
 
         case DOKU_LEXER_EXIT:
@@ -211,15 +213,14 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
 
             // close p if necessary
             if ($this->isParagraph($mk0)) $this->_closeParagraph($pos,$match,$handler);
-            
-            // list become shollower: close deeper list
-            // リスト深さが浅くなる場合 深いリストは閉じてしまう
+
+            // List item becomes shallower - close deeper list
             $close_div = true;
             while ( $depth0 > $depth1 ) {
                 if ($close_div && $this->use_div && !empty($mk0)) {
                     // close div
                     $this->_closeDiv($pos,$match,$handler);
-                    error_log('yalist close div1 : curr='.$depth1.' '.$mk1.' '.$n1);
+                    error_log('yalist close div in loop : curr='.$depth1.' '.$mk1.' '.$n1);
                 }
                 // close item tag [li|dt|dd]
                 $this->_closeItem($mk0, $pos,$match,$handler);
@@ -227,63 +228,56 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
                 $this->_closeList($mk0, $pos,$match,$handler);
 
                 list ($depth0, $mk0, $n0) = array_pop($this->stack);
-                error_log('yalist: prev='.$depth0.' '.$mk0.' '.$n0);
+                error_log('yalist: prev ='.$depth0.' '.$mk0.' '.$n0);
                 $close_div = false;
             }
             if ($state == DOKU_LEXER_EXIT) {
                 error_log('yalist: EXIT NOW: prev_depth='.$depth0 );
                 break;
             }
-            //この段階で 直前と現在の深さは同じになる。
 
             error_log('yalist: curr='.$depth1.' '.$mk1.' '.$n1);
 
-            // p でリストを浅くすることはありうるが、深くすることはできない
-            // 直前のアイテムタイプが p付きでない場合は p付きだったことにする
+            // Paragraph markup
             if ($mk1 == '..') {
                 $this->_openParagraph($pos,$match,$handler);
                 $depth1 = $depth0;
                 $n1     = $n0;
                 $mk1 = ($this->isParagraph($mk0)) ? $mk0 : $mk0.$mk0;
-                // 最初に取り崩したスタックを元に戻す
-                $data = array($depth1, $mk1, $n1); // スタックの末端を更新
+
+                // restore stack
+                $data = array($depth1, $mk1, $n1);
                 array_push($this->stack, $data);
                 break;
             }
 
-            // list を閉じる必要があるかを判断
-            /* HTML RULE: <ul>タグや<ol>タグの中には<li>タグ以外は入れてはいけない */
+            // List item markup
             if ($depth0 < $depth1) {
-                // リストが深くなる場合、ここで /li を発行してはならない。
-                // ただし、div は閉じる必要がある
-                // close div
+                // do not close the previous item, but close div if necessary
                 if ($this->use_div) {
                     $this->_closeDiv($pos,$match,$handler);
                     error_log('yalist close div : curr='.$depth1.' '.$mk1.' '.$n1);
                 }
-                // リストが深くなる場合は 最初に取り崩したスタックを元に戻す
+                // restore stack
                 $data = array($depth0, $mk0, $n0);
                 array_push($this->stack, $data);
 
             } else if ($depth0 == $depth1) {
-                // close item tag [li|dt|dd]
-                // リスト深さが同じ場合は /li を発行する
+                // close item [li|dt|dd]
                 $this->_closeItem($mk0, $pos,$match,$handler);
-                // close list tag [ul|ol|dl]
+                // check if we need to close previous list
                 if ($this->isListTypeChanged($mk0, $mk1)) {
+                    // close list [ul|ol|dl]
                     $this->_closeList($mk0, $pos,$match,$handler);
-                    $n0 = 0; // リスト種類が変わるため、リセット
+                    $n0 = 0;
                 }
             }
 
-            // open list tag [ul|ol|dl] if necessary
-            if (($depth0 < $depth1) || ($n0 == 0)) {
-                // リストが深くなるか、異なる種類のリストを開始する場合
-                // open list tag [ul|ol|dl]
+            // open list [ul|ol|dl] if necessary
+            if (($depth0 < $depth1) || ($n0 === 0)) {
                 if (!is_numeric($n1)) $n1 = 1;
                 $this->_openList($mk1, $n1, $pos,$match,$handler);
             } else {
-                // リスト深さが同じ、リストの種類も同じ場合
                 if (!is_numeric($n1)) $n1 = $n0  +1;
             }
 
@@ -294,7 +288,8 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
             // open p if necessary
             if ($this->isParagraph($mk1)) $this->_openParagraph($pos,$match,$handler);
 
-            $data = array($depth1, $mk1, $n1); // スタックの末端を更新
+            // add to stack
+            $data = array($depth1, $mk1, $n1);
             array_push($this->stack, $data);
 
         } // end of switch
