@@ -42,7 +42,6 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
         $this->pluginMode = substr(get_class($this), 7); // drop 'syntax_' from class name
 
         // prefix and surffix of html tags
-        /* HTML RULE: <ul>タグや<ol>タグの中には<li>タグ以外は入れてはいけない */
         $this->tags_map = array(
             'ol' => array("\n","\n"),  '/ol' => array("","\n"),
             'ul' => array("\n","\n"),  '/ul' => array("","\n"),
@@ -123,7 +122,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
             array($state, $tag, $attr), $state, $pos, $match);
     }
 
-    // open or close list tag [ul|ol|dl]
+    // write call to open or close a list [ul|ol|dl]
     private function _openList($mk, $start, $pos, $match, $handler) {
         $tag = $this->listTag($mk);
         if (($tag == 'ol') && is_numeric($start)) {
@@ -136,7 +135,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
         $this->_writeCall($tag,'',DOKU_LEXER_EXIT, $pos,$match,$handler);
     }
 
-    // open or close list item tag [li|dt|dd]
+    // write call to open or close a list item [li|dt|dd]
     private function _openItem($mk, $num, $pos, $match, $handler) {
         $list = $this->listTag($mk);
         $tag = $this->itemTag($mk);
@@ -150,6 +149,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
         $this->_writeCall($tag,'',DOKU_LEXER_EXIT, $pos,$match,$handler);
     }
 
+    // write call to open or close content (div tag)
     private function _openDiv($mk, $pos, $match, $handler) {
         $tag = 'div';
         $item = $this->itemTag($mk);
@@ -163,6 +163,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
         $this->_writeCall($tag,'',DOKU_LEXER_EXIT, $pos,$match,$handler);
     }
 
+    // write call to open or close paragraph (p tag)
     private function _openParagraph($pos, $match, $handler) {
         $this->_writeCall('p','',DOKU_LEXER_ENTER, $pos,$match,$handler);
     }
@@ -194,23 +195,24 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
             break;
 
         case DOKU_LEXER_UNMATCHED:
-            $handler->base($match, $state, $pos);    // cdata --- use base() as _writeCall() is prefixed for private/protected
+            // cdata --- use base() as _writeCall() is prefixed for private/protected
+            $handler->base($match, $state, $pos);
             break;
 
         case DOKU_LEXER_EXIT:
-            // list ($depth, $type) = $this->_interpret($match);
+            // list ($depth, $mk, $n) = $this->_interpret($match);
             // $depth = 0
-            error_log('yalist: EXIT ');
 
         case DOKU_LEXER_MATCHED:
-            list ($depth0, $mk0, $n0) = array_pop($this->stack); // スタック取り崩し
+            list ($depth0, $mk0, $n0) = array_pop($this->stack); // shorten the stack
             list ($depth1, $mk1, $n1) = $this->_interpret($match);
 
             error_log('yalist: prev0='.$depth0.' '.$mk0.' '.$n0);
 
-            // 該当する場合 li_div 内の p を閉じる(/p発行)
+            // close p if necessary
             if ($this->isParagraph($mk0)) $this->_closeParagraph($pos,$match,$handler);
             
+            // list become shollower: close deeper list
             // リスト深さが浅くなる場合 深いリストは閉じてしまう
             $close_div = true;
             while ( $depth0 > $depth1 ) {
@@ -249,35 +251,32 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
                 break;
             }
 
-            // item の div を閉じる必要があるかを判断
+            // list を閉じる必要があるかを判断
+            /* HTML RULE: <ul>タグや<ol>タグの中には<li>タグ以外は入れてはいけない */
             if ($depth0 < $depth1) {
+                // リストが深くなる場合、ここで /li を発行してはならない。
+                // ただし、div は閉じる必要がある
                 // close div
                 if ($this->use_div) {
                     $this->_closeDiv($pos,$match,$handler);
                     error_log('yalist close div : curr='.$depth1.' '.$mk1.' '.$n1);
                 }
-                // close item tag [li|dt|dd]
-                // リストが深くなる場合、ここで /li を発行してはならない。
-                //$this->_writeCall($this->itemTag($mk0),'',DOKU_LEXER_EXIT, $pos,$match,$handler);
-
                 // リストが深くなる場合は 最初に取り崩したスタックを元に戻す
                 $data = array($depth0, $mk0, $n0);
                 array_push($this->stack, $data);
-            }
 
-            // list を閉じる必要があるかを判断
-            if ($depth0 == $depth1) {
+            } else if ($depth0 == $depth1) {
+                // close item tag [li|dt|dd]
                 // リスト深さが同じ場合は /li を発行する
                 $this->_closeItem($mk0, $pos,$match,$handler);
-
+                // close list tag [ul|ol|dl]
                 if ($this->isListTypeChanged($mk0, $mk1)) {
-                    // close list tag [ul|ol|dl]
                     $this->_closeList($mk0, $pos,$match,$handler);
                     $n0 = 0; // リスト種類が変わるため、リセット
                 }
             }
 
-            // open list if necessary
+            // open list tag [ul|ol|dl] if necessary
             if (($depth0 < $depth1) || ($n0 == 0)) {
                 // リストが深くなるか、異なる種類のリストを開始する場合
                 // open list tag [ul|ol|dl]
@@ -303,7 +302,7 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
     }
 
 
-    /*
+    /**
      * Create output
      */
     function render($format, Doku_Renderer $renderer, $data) {
@@ -321,6 +320,10 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
         }
     }
 
+
+    /**
+     * Create xhtml output
+     */
     protected function render_xhtml(Doku_Renderer $renderer, $data) {
 
         list($state, $tag, $attr) = $data;
@@ -338,13 +341,19 @@ class syntax_plugin_yalist extends DokuWiki_Syntax_Plugin {
         }
     }
 
+    /**
+     * open a tag, a utility for render_xhtml()
+     */
     protected function _open($tag, $attr=NULL) {
-        if (!is_null($attr)) $attr = ' '.$attr;
+        if (!empty($attr)) $attr = ' '.$attr;
         $before = $this->tags_map[$tag][0];
         $after  = $this->tags_map[$tag][1];
         return $before.'<'.$tag.$attr.'>'.$after;
     }
 
+    /**
+     * close a tag, a utility for render_xhtml()
+     */
     protected function _close($tag) {
         $before = $this->tags_map['/'.$tag][0];
         $after  = $this->tags_map['/'.$tag][1];
